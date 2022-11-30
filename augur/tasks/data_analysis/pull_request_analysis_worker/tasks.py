@@ -182,6 +182,9 @@ def pull_request_analysis_model(repo_git: str) -> None:
 
     logger.info(f'Load pretrained model')
 
+    for fx in os.listdir("./"): 
+        logger.info(f'{fx}')
+
     # Load trained model
     model = joblib.load('trained_pr_model.pkl')
     merge_prob = model.predict_proba(features)
