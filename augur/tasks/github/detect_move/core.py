@@ -7,9 +7,13 @@ from augur.tasks.github.util.util import parse_json_response
 import logging
 
 def extract_owner_and_repo_from_endpoint(session,url):
-    response_from_gh = hit_api(session.oauths, url, session.logger)
+    response_from_gh = request_dict_from_endpoint(session,url)#hit_api(session.oauths, url, session.logger)
 
-    page_data = parse_json_response(session.logger, response_from_gh)
+    try:
+        page_data = parse_json_response(session.logger, response_from_gh)
+    except EOFError as e:
+        session.logger.error(f"Error: {e} \n Reached end of github response without parsing data! ")
+        raise e
 
     full_repo_name = page_data['full_name']
 

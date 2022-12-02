@@ -1,5 +1,5 @@
 from augur.tasks.github.facade_github.contributor_interfaceable.contributor_interface import * 
-from augur.tasks.github.util.util import get_owner_repo
+from augur.tasks.github.util.util import get_owner_repo, request_dict_from_endpoint
 from numpy.lib.utils import source
 from augur.tasks.github.util.github_task_session import *
 from augur.tasks.github.util.github_paginator import *

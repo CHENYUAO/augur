@@ -361,8 +361,11 @@ class GithubPaginator(collections.abc.Sequence):
                 num_attempts += 1
                 continue
             
-            
-            page_data = parse_json_response(self.logger, response)
+            try:
+                page_data = parse_json_response(self.logger, response)
+            except EOFError as e:
+                session.logger.error(f"Error: {e} \n Reached end of github response without parsing data! ")
+                page_data = ""
 
 
             # if the data is a list, then return it and the response
