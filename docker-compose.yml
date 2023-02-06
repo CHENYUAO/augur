@@ -11,10 +11,10 @@ services:
     ports:
       - "127.0.0.1:${AUGUR_DB_PORT:-5432}:5432"
 
-  redis:
+   redis:
     image: "redis:alpine"
     ports:
-     - 6379:6379
+      - 6379:6379
 
 
   augur:
@@ -38,8 +38,8 @@ services:
       - "AUGUR_GITLAB_USERNAME=${AUGUR_GITLAB_USERNAME}"
       - REDIS_CONN_STRING=redis://redis:6379
     depends_on:
-      - augur-db
-      - redis
+        - augur-db
+        - redis
   
 volumes:
   facade:

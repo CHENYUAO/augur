@@ -5,6 +5,7 @@ Metrics that provide data about software dependencies.
 
 import sqlalchemy as s
 import pandas as pd
+import datetime
 from augur.api.util import register_metric
 
 from augur.application.db.engine import create_database_engine

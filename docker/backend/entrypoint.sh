@@ -35,11 +35,11 @@ fi
 
 ./scripts/install/config.sh $target
 
-if [[ -f /repo_groups.csv ]]; then
+if [[ -f /augur/repo_groups.csv ]]; then
     augur db add-repo-groups /repo_groups.csv
 fi
 
-if [[ -f /repos.csv ]]; then
+if [[ -f /augur/repos.csv ]]; then
    augur db add-repos /repos.csv
 fi
 
