@@ -61,8 +61,8 @@ default_config = {
                 "ssl_key_file": None 
             },
             "Logging": {
-                "logs_directory": "",
-                "log_level": "INFO",
+                "logs_directory": "/augur/logs",
+                "log_level": "DEBUG",
             },
             "Celery": {
                 "concurrency": 12

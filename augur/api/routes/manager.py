@@ -17,7 +17,25 @@ import json
 import os 
 import traceback
 
+from celery import group, chain
+
+from augur.tasks.github import *
+from augur.application.db.session import DatabaseSession
+from augur.application.db.util import execute_session_query
+from augur.application.db.models.augur_data import Repo, RepoGroup
 from augur.application.config import AugurConfig 
+from augur.tasks.db.refresh_materialized_views import *
+from augur.tasks.git.facade_tasks import *
+from augur.tasks.github.detect_move.tasks import detect_github_repo_move
+from augur.tasks.init.celery_app import engine
+from augur.tasks.github.releases.tasks import collect_releases
+from augur.tasks.github.repo_info.tasks import collect_repo_info
+from augur.tasks.init.celery_app import celery_app as celery
+from augur.tasks.github.pull_requests.files_model.tasks import process_pull_request_files
+from augur.tasks.github.pull_requests.commits_model.tasks import process_pull_request_commits
+
+CELERY_GROUP_TYPE = type(group())
+CELERY_CHAIN_TYPE = type(chain())
 
 AUGUR_API_VERSION = 'api/unstable'
 
@@ -31,38 +49,39 @@ def create_routes(server):
             adds repos belonging to any user or group to an existing augur repo group
             'repos' are in the form org/repo, user/repo, or maybe even a full url 
         """
-        if authenticate_request(server.augur_app, request):
-            group = request.json['group']
-            repo_manager = Repo_insertion_manager(group, server.engine)
-            group_id = repo_manager.get_org_id()
-            errors = {}
-            errors['invalid_inputs'] = []
-            errors['failed_records'] = []
-            success = []
-            repos = request.json['repos']
-            for repo in repos:
-                url = Git_string(repo)
-                url.clean_full_string()
-                try: #need to test because we require org/repo or full git url
-                    url.is_repo()
-                    repo_name = url.get_repo_name()
-                    repo_parent = url.get_repo_organization()
-                except ValueError:
-                    errors['invalid_inputs'].append(repo)
-                else:   
-                    try:
-                        repo_id = repo_manager.insert_repo(group_id, repo_parent, repo_name)
-                    except exc.SQLAlchemyError:
-                        errors['failed_records'].append(repo_name)
-                    else: 
-                        success.append(get_inserted_repo(group_id, repo_id, repo_name, group, repo_manager.github_urlify(repo_parent, repo_name)))
-
-            status_code = 200
-            summary = {'repos_inserted': success, 'repos_not_inserted': errors}
-            summary = json.dumps(summary)
-        else:
-            status_code = 401
-            summary = json.dumps({'error': "Augur API key is either missing or invalid"})
+        # if authenticate_request(server.augur_app, request):
+        group = request.json['group']
+        repo_manager = Repo_insertion_manager(group, engine)
+        group_id = repo_manager.get_org_id()
+        if group_id == -1:
+            return Response(status_code = 401, response = json.dumps({'error': "not existing repo_group"}))
+        errors = {}
+        errors['invalid_inputs'] = []
+        errors['failed_records'] = []
+        success = []
+        repos = request.json['repos']
+        for repo in repos:
+            url = Git_string(repo)
+            url.clean_full_string()
+            try:
+                url.is_repo()
+                repo_name = url.get_repo_name()
+                repo_parent = url.get_repo_organization()
+            except ValueError:
+                errors['invalid_inputs'].append(repo)
+            else:   
+                try:
+                    repo_id = repo_manager.insert_repo(group_id, repo_parent, repo_name)
+                except exc.SQLAlchemyError:
+                    errors['failed_records'].append(repo_name)
+                else: 
+                    success.append(get_inserted_repo(group_id, repo_id, repo_name, group, repo_manager.github_urlify(repo_parent, repo_name)))
+        status_code = 200
+        summary = {'repos_inserted': success, 'repos_not_inserted': errors}
+        summary = json.dumps(summary)
+        # else:
+        #     status_code = 401
+        #     summary = json.dumps({'error': "Augur API key is either missing or invalid"})
 
         return Response(response=summary,
                         status=status_code,
@@ -72,7 +91,7 @@ def create_routes(server):
     def create_repo_group():
         if authenticate_request(server.augur_app, request):
             group = request.json['group']
-            repo_manager = Repo_insertion_manager(group, server.engine)
+            repo_manager = Repo_insertion_manager(group, engine)
             summary = {}
             summary['errors'] = []
             summary['repo_groups_created'] = []
@@ -110,7 +129,7 @@ def create_routes(server):
         """
         if authenticate_request(server.augur_app, request):
             group = request.json['org']
-            repo_manager = Repo_insertion_manager(group, server.engine)
+            repo_manager = Repo_insertion_manager(group, engine)
             summary = {}
             summary['group_errors'] = []
             summary['failed_repo_records'] = []
@@ -168,6 +187,18 @@ def create_routes(server):
         return Response(response=summary,
                         status=status_code,
                         mimetype="application/json")
+        
+    @server.app.route('/{}/start_tasks'.format(AUGUR_API_VERSION), methods=['POST'])
+    def start_repo_collection():
+        repo_id = request.json['repo_id']
+        with DatabaseSession(logger) as session:
+            repo = session.query(Repo).filter(Repo.repo_id==repo_id).one()
+            if not repo:
+                summary = json.dumps({'error': "repo not exist!"})
+                return Response(response=summary, status=100, mimetype="application/json")
+            create_collection_task(repo=repo)
+        return Response(status=200, mimetype="application/json")
+ 
     
     def get_inserted_repo(groupid, repoid, reponame, groupname, url):
         inserted_repo={}
@@ -187,9 +218,8 @@ class Repo_insertion_manager():
         self.db = database_connection
         ## added for keys
         self._root_augur_dir = Repo_insertion_manager.ROOT_AUGUR_DIR
-        self.augur_config = AugurConfig(self._root_augur_dir)
+        self.augur_config = AugurConfig(logger, engine)
         ##########
-
 
     def get_existing_repos(self, group_id):
         """returns repos belonging to repogroup in augur db"""
@@ -232,31 +262,44 @@ class Repo_insertion_manager():
             return True
 
     def insert_repo(self, orgid, given_org, reponame):
-        """creates a new repo record"""
-        insert_repo_query = s.sql.text("""
-            INSERT INTO augur_data.repo(repo_group_id, repo_git, repo_status,
-                tool_source, tool_version, data_source, data_collection_date)
-            VALUES (:repo_group_id, :repo_git, 'New', 'CLI', 1.0, 'Git', CURRENT_TIMESTAMP)
-            RETURNING repo_id
-        """)
-        repogit = self.github_urlify(given_org, reponame)
-        insert_repo_query = insert_repo_query.bindparams(repo_group_id = int(orgid), repo_git = repogit)
-        result = self.db.execute(insert_repo_query).fetchone()
-        return result['repo_id']
+        with DatabaseSession(logger) as session:
+            repogit = self.github_urlify(given_org, reponame)
+            repo_data = {
+                "repo_group_id": int(orgid),
+                "repo_git": repogit,
+                "repo_status": "New",
+                "tool_source": 'API',
+                "tool_version": "1.0",
+                "data_source": "Git"
+            }
+            repo_unique = ["repo_git"]
+            return_columns = ["repo_id"]
+            result = session.insert_data(repo_data, Repo, repo_unique, return_columns, on_conflict_update=False)
+            if not result:
+                return None
+            return result[0]["repo_id"]
+
+    def insert_repo_with_cli(group_id, repos):
+        with GithubTaskSession(logger) as session:
+            controller = RepoLoadController(session)
+            for repo in repos:
+                repo_data = {}
+                repo_data["url"] = repo
+                repo_data["repo_group_id"] = group_id
+                print(
+                    f"Inserting repo with Git URL `{repo_data['url']}` into repo group {repo_data['repo_group_id']}")
+                controller.add_cli_repo(repo_data)
 
     def github_urlify(self, org, repo):
         return "https://github.com/" + org + "/" + repo
 
     def get_org_id(self):
-        select_group_query = s.sql.text("""
-            SELECT repo_group_id
-            FROM augur_data.repo_groups
-            WHERE rg_name = :group_name
-        """)
-        select_group_query = select_group_query.bindparams(group_name = self.org)
-        result = self.db.execute(select_group_query)
-        row = result.fetchone()
-        return row['repo_group_id']
+        with DatabaseSession(logger) as session:
+            try:
+                repo_group = session.query(RepoGroup).filter(RepoGroup.rg_name==self.org).one()
+                return repo_group.repo_group_id
+            except Exception as e:
+                return -1
         
     def insert_repo_group(self):
         """creates a new repo_group record and returns its id"""
@@ -313,6 +356,43 @@ class Repo_insertion_manager():
 #            url = "https://api.github.com/users/{}/repos?per_page=100&page={}" 
 #            res = requests.get(url).json()
 #        return url.format(self.org, str(page))
+
+def create_collection_task(repo):
+    tasks_with_repo_domain = [detect_github_repo_move.si(repo.repo_git)]
+    preliminary_tasks = group(*tasks_with_repo_domain)
+    
+    repo_info_tasks = []
+    first_tasks_repo = group(collect_issues.si(repo.repo_git),collect_pull_requests.si(repo.repo_git))
+    second_tasks_repo = group(collect_events.si(repo.repo_git),
+        collect_github_messages.si(repo.repo_git),process_pull_request_files.si(repo.repo_git), process_pull_request_commits.si(repo.repo_git))
+    repo_chain = chain(first_tasks_repo,second_tasks_repo)
+    issue_dependent_tasks = [repo_chain]
+    repo_task_group = group(
+        *repo_info_tasks,
+        chain(group(*issue_dependent_tasks),process_contributors.si()),
+        generate_facade_chain(logger),
+        collect_releases.si()
+    )
+    repo_collect_task = chain(repo_task_group, refresh_materialized_views.si())
+    
+    for tasks in [preliminary_tasks, repo_collect_task]:
+        logger.info(f"Starting phase {tasks.__name__}")
+        try:
+            phaseResult = tasks.apply_async() 
+
+            # if the job is a group of tasks then join the group
+            if isinstance(tasks, CELERY_GROUP_TYPE): 
+                with allow_join_result():
+                    phaseResult.join()
+
+        except Exception as e:
+            #Log full traceback if a phase fails.
+            logger.error(
+            ''.join(traceback.format_exception(None, e, e.__traceback__)))
+            logger.error(
+                f"Phase {tasks.__name__} has failed during augur collection. Error: {e}")
+            raise e
+
 
 class Git_string():
     """ represents possible repo, org or username arguments """

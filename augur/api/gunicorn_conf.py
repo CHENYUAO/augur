@@ -19,6 +19,7 @@ with DatabaseSession(logger) as session:
     workers = multiprocessing.cpu_count() * 2 + 1
     umask = 0o007
     reload = True
+    debug = True
 
     # set the log location for gunicorn    
     logs_directory = session.config.get_value('Logging', 'logs_directory')

@@ -59,6 +59,7 @@ class Server():
     def create_app(self):
         """Define the flask app and configure the routes."""
         self.app = Flask(__name__)
+        self.app.debug = True
         self.logger.debug("Created Flask app")
 
         # defines the api version on the flask app, 
@@ -71,7 +72,7 @@ class Server():
         self.app.url_map.strict_slashes = False
 
         self.app.config['WTF_CSRF_ENABLED'] = False
-
+        self.app.config["DEBUG"] = True
 
         self.logger.debug("Creating API routes...")
         self.create_all_routes()
