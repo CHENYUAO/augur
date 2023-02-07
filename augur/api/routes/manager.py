@@ -280,6 +280,8 @@ class Repo_insertion_manager():
             return result[0]["repo_id"]
 
     def insert_repo_with_cli(group_id, repos):
+        from augur.tasks.github.util.github_task_session import GithubTaskSession
+        from augur.util.repo_load_controller import RepoLoadController
         with GithubTaskSession(logger) as session:
             controller = RepoLoadController(session)
             for repo in repos:

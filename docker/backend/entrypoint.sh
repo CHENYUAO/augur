@@ -43,4 +43,4 @@ if [[ -f /augur/repos.csv ]]; then
    augur db add-repos /repos.csv
 fi
 
-exec augur backend start
+exec augur backend start --disable-collection
